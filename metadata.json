@@ -1,0 +1,10 @@
+{
+    "uuid": "cinnamon-privacy-indicator@vibhs",
+    "name": "Privacy Indicator",
+    "description": "Shows a panel icon when the camera or microphone is actively in use",
+    "icon": "camera-web",
+    "max-instances": 1,
+    "role": "notifications",
+    "cinnamon-version": ["4.0"],
+    "license": "GPL-2.0-or-later"
+}

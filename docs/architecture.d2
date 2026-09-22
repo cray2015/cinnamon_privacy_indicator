@@ -1,0 +1,63 @@
+cinnamon: Cinnamon Panel {
+  shape: rectangle
+}
+
+applet: applet.js {
+  shape: rectangle
+
+  timer: Mainloop poll timer\n(~2s, single GLib source) {
+    shape: rectangle
+  }
+
+  state_machine: State machine\n(idle / camera / mic / both) {
+    shape: rectangle
+  }
+
+  mic_availability: mic detection availability\n(true / false, sticky) {
+    shape: rectangle
+  }
+
+  panel_icon: St.Icon panel display {
+    shape: rectangle
+  }
+
+  popup_menu: Click popup menu\n(process list) {
+    shape: rectangle
+  }
+
+  timer -> state_machine: triggers poll
+}
+
+fuser: fuser <videoN...>\n(Gio.Subprocess, async) {
+  shape: rectangle
+}
+
+pw_dump: pw-dump\n(Gio.Subprocess, async) {
+  shape: rectangle
+}
+
+proc: /proc/<pid>/comm {
+  shape: rectangle
+}
+
+dev_video: /dev/video* {
+  shape: cylinder
+}
+
+pipewire_graph: PipeWire native graph\n(nodes, state: running/idle) {
+  shape: rectangle
+}
+
+cinnamon -> applet: loads
+applet.timer -> fuser: spawn (camera check)
+applet.timer -> pw_dump: spawn (mic check)
+fuser -> dev_video: queries holders of
+fuser -> proc: PID -> process name lookup
+pw_dump -> pipewire_graph: dumps
+fuser -> applet.state_machine: PIDs
+pw_dump -> applet.state_machine: Stream/Input/Audio nodes\nwith state=running
+pw_dump -> applet.mic_availability: GLib.SpawnError.NOENT ->\nfalse (once, logged)
+applet.mic_availability -> applet.panel_icon: overrides hidden idle icon\nwith error.svg when false
+applet.state_machine -> applet.panel_icon: sets state
+applet.state_machine -> applet.popup_menu: updates process list
+applet.panel_icon -> applet.popup_menu: click opens
