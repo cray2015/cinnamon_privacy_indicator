@@ -139,6 +139,102 @@ actually solid vs. assumed:
   misread as a PID) is a property of `fuser`'s documented stdout/stderr
   contract, not something that depends on device count.
 
+### 4.2 Cinnamon Spices submission prep
+
+Verified against the actual current requirements (CI validator source,
+published code-review checklist, and a real example applet in
+`linuxmint/cinnamon-spices-applets`, not from memory) ahead of a
+possible submission there. Fixed in `applet.js`/`metadata.json`:
+
+- `metadata.json`'s `"icon"` field is explicitly on validate-spice's
+  forbidden-fields list (`icon`, `dangerous`, `last-edited`) — removed;
+  the applet already sets its icon entirely at runtime via
+  `set_applet_icon_path()` regardless, so this had zero functional
+  effect. Added `"version"` (expected by the ecosystem's translation
+  tooling; not validator-enforced but present on every real example
+  checked).
+- Bound the applet's own gettext domain (`Gettext.bindtextdomain` +
+  a domain-scoped `_()`) instead of relying on Cinnamon's global one,
+  which only covers Cinnamon's own strings — without this, per-applet
+  `po/` translations would never have applied to ours.
+- Two menu-item labels built PID suffixes via raw string concatenation
+  (an untranslatable literal " (PID ...)"); converted to
+  `_("%s (PID %s)").format(name, pid)`, matching the review checklist's
+  explicit "printf-style format tokens, not concatenation" convention.
+  Confirmed `String.prototype.format` is available in this environment
+  (Cinnamon's own boot sequence initializes it) via a live Looking
+  Glass check before relying on it.
+- Poll timer callback (`_pollTick`) now returns `GLib.SOURCE_CONTINUE`
+  instead of a bare `true` — the review checklist explicitly asks for
+  the named constants over their boolean equivalents.
+- `listVideoDevices()` and `resolveProcessName()` were synchronous
+  (`Gio.File.enumerate_children`, `file.load_contents`) — justified at
+  the time as negligible since `/dev`/`/proc` are in-memory pseudo-
+  filesystems, but the review checklist says sync I/O is "avoided at
+  all costs," full stop, no carve-out for pseudo-fs reads. Rewritten as
+  `listVideoDevicesAsync()` (paged `enumerate_children_async` /
+  `next_files_async`) and `resolveProcessNamesAsync()` (parallel
+  `load_contents_async` calls fanned in via a remaining-count join,
+  same pattern `_pollTick()` already used for camera/mic). Practical
+  runtime behavior is unchanged — verified live (camera-only, mic-only,
+  both-active, and the mic-unavailable error path all still resolve
+  and render correctly) — this was a style/convention fix, not a bug
+  fix.
+- Gettext domain bound against `GLib.get_home_dir() + '/.local/share/
+  locale'` (hardcoded) — flagged by the Spices repo's own automated
+  "best-practices scanner" bot on the PR (`hardcoded_data_dir`) once
+  submitted, because it doesn't respect an `XDG_DATA_HOME` override.
+  Switched to `GLib.get_user_data_dir() + '/locale'`. Notable: the
+  review doc's own quoted example boilerplate (§4.2 above) uses the
+  hardcoded form — the scanner is stricter than the documented
+  convention it's nominally checking. Verified `GLib.get_user_data_dir()`
+  returns the expected `~/.local/share` both via PyGObject and live GJS
+  before relying on it, and re-confirmed full live regression
+  (camera/mic/both/error paths, timer non-stacking) after the change.
+
+UUID resolved: renamed from `@vibhs` to `@cray2015` (matches the
+GitHub account this is submitted from, and the noreply-email identity
+already used for commits — planned as a consistent `@cray2015`
+namespace across future applet submissions too, not just this one).
+
+### 4.3 Cinnamon Spices submission status
+
+Submitted. Fork: `cray2015/cinnamon-spices-applets`, branch
+`add-cinnamon-privacy-indicator`. PR:
+https://github.com/linuxmint/cinnamon-spices-applets/pull/9080
+("cinnamon-privacy-indicator: add new applet showing camera/mic
+activity"), 3 commits as of the gettext fix above.
+
+Submission packaging lives only in the fork, not this repo — this repo
+stays the flat, standalone-clone layout described in §12. The fork
+adds `cinnamon-privacy-indicator@cray2015/info.json` (author: cray2015,
+license: GPL-2.0-or-later), `.../screenshot.png` (real popup + icon,
+captured live with actual camera+mic activity), `.../README.md`
+(user-facing description for the Spices page — distinct purpose from
+this repo's README, which is developer/install-focused), and
+`.../files/cinnamon-privacy-indicator@cray2015/` holding the exact
+same `applet.js`/`metadata.json`/`settings-schema.json`/`icons/` as
+this repo (diff-verified byte-identical at each sync). `icon.png`
+(96×96, derived from the both-active split design) is new — a static
+package-catalog icon, separate from the runtime state SVGs, required
+by `validate-spice` and not something this standalone repo needed
+before.
+
+`metadata.json` also gained `"author": "cray2015"` and `"website":
+"https://github.com/linuxmint/cinnamon-spices-applets"` (pointed at
+the Spices repo itself, not this standalone repo, per instruction) —
+matching fields a real published applet (`Cinnamenu@json`) carries,
+fetched and checked directly rather than guessed.
+
+CI status at submission: `validate-spice` passes clean (run locally
+against the staged fork directory before every push); the PR's
+automated "Pattern Check" passes; "Validate spices" shows "skipping"
+on the PR — confirmed expected, not a failure: the full validator only
+runs on `pull_request` (same-repo), while a fork PR triggers
+`pull_request_target`, which intentionally defers the full run to a
+maintainer for security reasons. Awaiting human review from the
+Cinnamon team.
+
 ## 5. Architecture
 Cinnamon panel (loads `applet.js`) → polling timer (GLib async, ~2s
 interval) → `Gio.Subprocess` spawns `pw-dump` (mic) and `fuser

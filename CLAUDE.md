@@ -6,8 +6,8 @@ code in this repository.
 ## Build Commands
 ```bash
 # install — symlink or copy applet into Cinnamon's applet directory
-mkdir -p ~/.local/share/cinnamon/applets/cinnamon-privacy-indicator@vibhs
-cp -r ./* ~/.local/share/cinnamon/applets/cinnamon-privacy-indicator@vibhs/
+mkdir -p ~/.local/share/cinnamon/applets/cinnamon-privacy-indicator@cray2015
+cp -r ./* ~/.local/share/cinnamon/applets/cinnamon-privacy-indicator@cray2015/
 # Cinnamon applets are plain JS/JSON, no compile step — "build" is just
 # placing files where Cinnamon's applet loader looks for them.
 

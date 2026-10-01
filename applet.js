@@ -7,7 +7,19 @@ const Settings = imports.ui.settings;
 const Mainloop = imports.mainloop;
 const Gio = imports.gi.Gio;
 const GLib = imports.gi.GLib;
+const Gettext = imports.gettext;
 const ByteArray = imports.byteArray;
+
+const UUID = 'cinnamon-privacy-indicator@cray2015';
+
+// Bind our own translation domain rather than relying on Cinnamon's global
+// gettext setup, which only covers Cinnamon's own strings — without this,
+// a translator's po/ files for this applet would never actually apply.
+Gettext.bindtextdomain(UUID, GLib.get_user_data_dir() + '/locale');
+
+function _(text) {
+    return Gettext.dgettext(UUID, text);
+}
 
 const STATE = {
     IDLE: 'idle',
@@ -58,38 +70,73 @@ function runSubprocessAsync(argv, callback) {
     });
 }
 
-function listVideoDevices() {
-    let devices = [];
-    try {
-        let devDir = Gio.File.new_for_path('/dev');
-        let enumerator = devDir.enumerate_children('standard::name', Gio.FileQueryInfoFlags.NONE, null);
-        let info;
-        while ((info = enumerator.next_file(null)) !== null) {
-            let name = info.get_name();
-            if (/^video\d+$/.test(name)) {
-                devices.push('/dev/' + name);
+// Async all the way down (enumerate + paged next_files_async), even though
+// /dev is a tiny in-memory pseudo-fs — this runs in Cinnamon's own process,
+// so any sync I/O here blocks the compositor's main loop, not just us.
+function listVideoDevicesAsync(callback) {
+    let devDir = Gio.File.new_for_path('/dev');
+    devDir.enumerate_children_async(
+        'standard::name', Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, null,
+        (source, res) => {
+            let enumerator;
+            try {
+                enumerator = source.enumerate_children_finish(res);
+            } catch (e) {
+                // /dev not readable — no video devices to report.
+                callback([]);
+                return;
             }
+            let devices = [];
+            let collectNext = () => {
+                enumerator.next_files_async(64, GLib.PRIORITY_DEFAULT, null, (src2, res2) => {
+                    let infos;
+                    try {
+                        infos = src2.next_files_finish(res2);
+                    } catch (e) {
+                        infos = [];
+                    }
+                    if (infos.length === 0) {
+                        enumerator.close_async(GLib.PRIORITY_DEFAULT, null, () => {});
+                        callback(devices.sort());
+                        return;
+                    }
+                    for (let info of infos) {
+                        let name = info.get_name();
+                        if (/^video\d+$/.test(name)) {
+                            devices.push('/dev/' + name);
+                        }
+                    }
+                    collectNext();
+                });
+            };
+            collectNext();
         }
-        enumerator.close(null);
-    } catch (e) {
-        // No /dev entries readable — machine has no video devices at all,
-        // which is an expected, common case, not a failure.
-        return [];
-    }
-    return devices.sort();
+    );
 }
 
-function resolveProcessName(pid) {
-    try {
-        let file = Gio.File.new_for_path('/proc/' + pid + '/comm');
-        let [ok, contents] = file.load_contents(null);
-        if (ok) {
-            return ByteArray.toString(contents).trim();
-        }
-    } catch (e) {
-        // Process may have exited between fuser's snapshot and this read.
+// Resolves several PIDs' process names in parallel and fans back in once
+// all have finished — same join pattern _pollTick() uses for camera/mic.
+function resolveProcessNamesAsync(pids, callback) {
+    let names = {};
+    let remaining = pids.length;
+    if (remaining === 0) {
+        callback(names);
+        return;
     }
-    return 'unknown';
+    for (let pid of pids) {
+        let file = Gio.File.new_for_path('/proc/' + pid + '/comm');
+        file.load_contents_async(null, (source, res) => {
+            try {
+                let [ok, contents] = source.load_contents_finish(res);
+                names[pid] = ok ? ByteArray.toString(contents).trim() : 'unknown';
+            } catch (e) {
+                // Process may have exited between fuser's snapshot and this read.
+                names[pid] = 'unknown';
+            }
+            remaining--;
+            if (remaining === 0) callback(names);
+        });
+    }
 }
 
 class PrivacyIndicatorApplet extends Applet.IconApplet {
@@ -150,7 +197,7 @@ class PrivacyIndicatorApplet extends Applet.IconApplet {
         if (this._pollInFlight) {
             // Previous poll's subprocesses haven't returned yet — skip this
             // tick rather than stacking a second round of detection calls.
-            return true;
+            return GLib.SOURCE_CONTINUE;
         }
         this._pollInFlight = true;
 
@@ -175,31 +222,34 @@ class PrivacyIndicatorApplet extends Applet.IconApplet {
             finish();
         });
 
-        return true;
+        return GLib.SOURCE_CONTINUE;
     }
 
     _checkCamera(callback) {
-        let devices = listVideoDevices();
-        if (devices.length === 0) {
-            callback([]);
-            return;
-        }
-        // errorKind is ignored here: fuser (psmisc) is near-universal on
-        // desktop distros, unlike pw-dump/PipeWire — see _checkMic.
-        runSubprocessAsync(['fuser'].concat(devices), (stdout, errorKind) => {
-            let matches = stdout.match(/\d+/g);
-            if (!matches) {
+        listVideoDevicesAsync((devices) => {
+            if (devices.length === 0) {
                 callback([]);
                 return;
             }
-            let seen = {};
-            let processes = [];
-            for (let pid of matches) {
-                if (seen[pid]) continue;
-                seen[pid] = true;
-                processes.push({ pid: pid, name: resolveProcessName(pid) });
-            }
-            callback(processes);
+            // errorKind is ignored here: fuser (psmisc) is near-universal on
+            // desktop distros, unlike pw-dump/PipeWire — see _checkMic.
+            runSubprocessAsync(['fuser'].concat(devices), (stdout, errorKind) => {
+                let matches = stdout.match(/\d+/g);
+                if (!matches) {
+                    callback([]);
+                    return;
+                }
+                let seen = {};
+                let uniquePids = [];
+                for (let pid of matches) {
+                    if (seen[pid]) continue;
+                    seen[pid] = true;
+                    uniquePids.push(pid);
+                }
+                resolveProcessNamesAsync(uniquePids, (names) => {
+                    callback(uniquePids.map(pid => ({ pid: pid, name: names[pid] })));
+                });
+            });
         });
     }
 
@@ -220,7 +270,7 @@ class PrivacyIndicatorApplet extends Applet.IconApplet {
                 // forever; _buildMenu() also surfaces it in the popup.
                 if (this._micDetectionAvailable !== false) {
                     this._micDetectionAvailable = false;
-                    global.logWarning('[cinnamon-privacy-indicator@vibhs] ' +
+                    global.logWarning('[' + UUID + '] ' +
                         'pw-dump not found — microphone detection is unavailable ' +
                         '(requires PipeWire). Camera detection is unaffected.');
                 }
@@ -312,7 +362,7 @@ class PrivacyIndicatorApplet extends Applet.IconApplet {
             this.menu.addMenuItem(new PopupMenu.PopupMenuItem(_("Camera:"), { reactive: false }));
             for (let p of this._cameraProcesses) {
                 this.menu.addMenuItem(new PopupMenu.PopupMenuItem(
-                    '  ' + p.name + ' (PID ' + p.pid + ')', { reactive: false }));
+                    '  ' + _("%s (PID %s)").format(p.name, p.pid), { reactive: false }));
             }
         }
 
@@ -323,8 +373,8 @@ class PrivacyIndicatorApplet extends Applet.IconApplet {
         if (hasMic) {
             this.menu.addMenuItem(new PopupMenu.PopupMenuItem(_("Microphone:"), { reactive: false }));
             for (let p of this._micProcesses) {
-                let label = '  ' + p.name + (p.pid ? ' (PID ' + p.pid + ')' : '');
-                this.menu.addMenuItem(new PopupMenu.PopupMenuItem(label, { reactive: false }));
+                let label = p.pid ? _("%s (PID %s)").format(p.name, p.pid) : p.name;
+                this.menu.addMenuItem(new PopupMenu.PopupMenuItem('  ' + label, { reactive: false }));
             }
         } else if (micBroken) {
             this.menu.addMenuItem(new PopupMenu.PopupMenuItem(

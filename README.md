@@ -5,6 +5,13 @@ actively in use, and shows which process is responsible on click. See
 `project_spec.md` for the full design rationale and `docs/architecture.d2`
 for the architecture diagram.
 
+**Status:** submitted to [Cinnamon Spices](https://cinnamon-spices.linuxmint.com/applets)
+— see [PR #9080](https://github.com/linuxmint/cinnamon-spices-applets/pull/9080),
+awaiting review. Until it's merged, install manually using the steps
+below; this repo itself is not affected by whether that PR is
+accepted — it stays a normal standalone clone-and-copy install either
+way (see `project_spec.md` §4.3 for how the two relate).
+
 **Requirements:** Cinnamon 4.0+ (declared in `metadata.json`; older
 versions refuse to load with a clean error instead of crashing). Camera
 detection needs `fuser` (psmisc, near-universal on desktop distros).
@@ -48,8 +55,8 @@ which pw-dump   # PipeWire — needed for microphone detection
 **3. Copy into Cinnamon's applets directory.**
 
 ```bash
-mkdir -p ~/.local/share/cinnamon/applets/cinnamon-privacy-indicator@vibhs
-cp -r ./* ~/.local/share/cinnamon/applets/cinnamon-privacy-indicator@vibhs/
+mkdir -p ~/.local/share/cinnamon/applets/cinnamon-privacy-indicator@cray2015
+cp -r ./* ~/.local/share/cinnamon/applets/cinnamon-privacy-indicator@cray2015/
 ```
 
 **4. Reload Cinnamon so it picks up the new applet** — see **Reload
