@@ -47,3 +47,22 @@ applet state and catch exceptions during development.
   dev session, and are why previous applets built here have had to be
   disabled outright. Treat this as a correctness requirement, not
   polish. See `PROJECT_SPEC.md` §4.
+- **Any long-lived child process (`screen_share_helper.py`) must call
+  `PR_SET_PDEATHSIG` on startup, and `on_applet_removed_from_panel` must
+  still explicitly kill it too.** — A spawned OS process does not die on
+  its own just because its parent (Cinnamon) does; verified empirically
+  that `cinnamon --replace` leaks it otherwise (see `PROJECT_SPEC.md`
+  §7.3 for the test and the one residual gap it doesn't close: removing
+  only this applet, without restarting Cinnamon, isn't always observed
+  to call that cleanup hook in this environment — bounded by PDEATHSIG
+  at the next restart, but not instant). This is the same class of bug
+  as the stacked-timer one above, one layer further out — a leaked OS
+  process instead of a leaked in-process timer.
+- **Verify screen-capture signal changes against real tools, not
+  synthetic generators.** — Each capturer reads the screen differently
+  (Chromium: `CopyArea`; OBS window capture: `GetCursorImage` polling).
+  The first version shipped with a synthetic `GetImage` test that
+  passed by construction while real Meet shares went undetected. When
+  a real case is missed, record the capturing process's unfiltered X
+  request stream first (RECORD histogram, no sudo) before theorizing.
+  See `PROJECT_SPEC.md` §7.3, "Correction history".

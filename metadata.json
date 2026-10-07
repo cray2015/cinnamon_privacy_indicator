@@ -1,8 +1,8 @@
 {
     "uuid": "cinnamon-privacy-indicator@cray2015",
     "name": "Privacy Indicator",
-    "description": "Shows a panel icon when the camera or microphone is actively in use",
-    "version": "1.0",
+    "description": "Shows a panel icon when the camera, microphone, or screen is actively in use",
+    "version": "1.1",
     "max-instances": 1,
     "role": "notifications",
     "cinnamon-version": ["4.0"],

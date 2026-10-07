@@ -17,6 +17,10 @@ applet: applet.js {
     shape: rectangle
   }
 
+  screen_share_state: screen-share active\n(bool, orthogonal to state machine) {
+    shape: rectangle
+  }
+
   panel_icon: St.Icon panel display {
     shape: rectangle
   }
@@ -48,6 +52,18 @@ pipewire_graph: PipeWire native graph\n(nodes, state: running/idle) {
   shape: rectangle
 }
 
+screen_share_helper: screen_share_helper.py\n(persistent process, python3-xlib,\nPR_SET_PDEATHSIG) {
+  shape: rectangle
+}
+
+x11_record: X11 RECORD extension\n(replicates CopyArea, GetImage, ShmGetImage,\nGetCursorImage, NameWindowPixmap, FreePixmap) {
+  shape: cylinder
+}
+
+x11_xres: X-Resource extension\n(id_base -> PID) {
+  shape: cylinder
+}
+
 cinnamon -> applet: loads
 applet.timer -> fuser: spawn (camera check)
 applet.timer -> pw_dump: spawn (mic check)
@@ -61,3 +77,10 @@ applet.mic_availability -> applet.panel_icon: overrides hidden idle icon\nwith e
 applet.state_machine -> applet.panel_icon: sets state
 applet.state_machine -> applet.popup_menu: updates process list
 applet.panel_icon -> applet.popup_menu: click opens
+
+applet -> screen_share_helper: spawn once at startup\n(not per poll-tick); killed in\non_applet_removed_from_panel
+screen_share_helper -> x11_record: watches (debounced:\n3 matches / 1.5s = "active")
+screen_share_helper -> x11_xres: resolves id_base -> PID
+screen_share_helper -> applet.screen_share_state: READY / ACTIVE <pids> / IDLE\n(stdout, read_line_async)
+applet.screen_share_state -> applet.panel_icon: draws red ring overlay\non whichever base icon shows
+applet.screen_share_state -> applet.popup_menu: adds "Screen capture:" section

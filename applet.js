@@ -39,6 +39,16 @@ const ICON_FILES = {
     error: 'error.svg'
 };
 
+// Screen-share is an orthogonal signal (ring overlay), not another STATE
+// value — any of the four base icons can appear with or without it, so it
+// gets its own filename map instead of growing STATE into eight values.
+const ICON_FILES_SCREEN_SHARE = {
+    [STATE.IDLE]: 'idle-share.svg',
+    [STATE.CAMERA]: 'camera-active-share.svg',
+    [STATE.MIC]: 'mic-active-share.svg',
+    [STATE.BOTH]: 'both-active-share.svg'
+};
+
 // fuser sends PIDs to stdout and everything else (access-type letters, errors
 // for a device with no holder) to stderr, so plain `fuser <paths>` on stdout
 // is all we need — no -v table to parse, no ps call to cross-reference.
@@ -152,6 +162,15 @@ class PrivacyIndicatorApplet extends Applet.IconApplet {
         // null = not checked yet, true = pw-dump present, false = missing.
         this._micDetectionAvailable = null;
 
+        this._screenShareProc = null;
+        this._screenShareActive = false;
+        this._screenShareProcesses = [];
+        // null = not checked yet, true = helper confirmed watching, false =
+        // unavailable (not X11, python3-xlib missing, or the X server lacks
+        // RECORD/X-Resource). Unlike mic, this degrades silently (no error
+        // icon) — see _startScreenShareMonitor() and project_spec.md §7.3.
+        this._screenShareDetectionAvailable = null;
+
         this.settings = new Settings.AppletSettings(this, metadata.uuid, instance_id);
         this._pollIntervalSec = 2;
         this.settings.bind('poll-interval', 'pollIntervalSetting', this._onPollIntervalChanged.bind(this));
@@ -168,6 +187,7 @@ class PrivacyIndicatorApplet extends Applet.IconApplet {
         this.actor.hide();
 
         this._startPolling();
+        this._startScreenShareMonitor();
     }
 
     _onPollIntervalChanged() {
@@ -175,8 +195,10 @@ class PrivacyIndicatorApplet extends Applet.IconApplet {
         this._startPolling();
     }
 
-    _applyIcon(state) {
-        let path = this._metadata.path + '/icons/' + ICON_FILES[state];
+    _applyIcon(state, screenShareActive) {
+        let filename = (screenShareActive && ICON_FILES_SCREEN_SHARE[state])
+            ? ICON_FILES_SCREEN_SHARE[state] : ICON_FILES[state];
+        let path = this._metadata.path + '/icons/' + filename;
         this.set_applet_icon_path(path);
     }
 
@@ -306,9 +328,128 @@ class PrivacyIndicatorApplet extends Applet.IconApplet {
         });
     }
 
+    // Long-lived helper (not another poll-tick subprocess): it blocks
+    // inside the X11 RECORD extension's event loop, so it has to be a
+    // persistent process we read incrementally from, not a spawn-wait-reap
+    // like fuser/pw-dump. See screen_share_helper.py and project_spec.md
+    // §7.3 for why no GJS/GObject-Introspection binding exists for this and
+    // a separate Python process is unavoidable.
+    _startScreenShareMonitor() {
+        let sessionType = GLib.getenv('XDG_SESSION_TYPE');
+        if (sessionType !== 'x11') {
+            // Expected on Wayland, not a failure — the whole detection
+            // mechanism (X11 RECORD) doesn't exist there. Logged once so
+            // it's still discoverable via Looking Glass rather than just
+            // silently never showing a ring.
+            this._screenShareDetectionAvailable = false;
+            global.logWarning('[' + UUID + '] Screen-share detection requires ' +
+                'an X11 session (this session is \'' + (sessionType || 'unknown') +
+                '\') — skipping.');
+            return;
+        }
+
+        let proc;
+        try {
+            proc = new Gio.Subprocess({
+                argv: ['python3', this._metadata.path + '/screen_share_helper.py'],
+                flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
+            });
+            proc.init(null);
+        } catch (e) {
+            this._screenShareDetectionAvailable = false;
+            global.logWarning('[' + UUID + '] Screen-share detection unavailable ' +
+                '— could not start helper (is python3 installed?): ' + e.message);
+            return;
+        }
+
+        this._screenShareProc = proc;
+        let stdout = new Gio.DataInputStream({ base_stream: proc.get_stdout_pipe() });
+        let stderrStream = new Gio.DataInputStream({ base_stream: proc.get_stderr_pipe() });
+
+        // Fires whenever the helper exits — on startup failure (missing
+        // python3-xlib, no RECORD/XRes extension) or an unexpected crash.
+        // Mirrors _checkMic()'s pattern: surface it once via logWarning
+        // rather than silently degrading to "ring never appears".
+        proc.wait_async(null, (source, res) => {
+            try {
+                source.wait_finish(res);
+            } catch (e) { /* ignore */ }
+            // this._screenShareProc was already nulled out by
+            // _stopScreenShareMonitor() on an intentional shutdown —
+            // don't log a false "unavailable" warning for that case.
+            if (this._screenShareProc !== proc) return;
+            this._screenShareProc = null;
+            this._screenShareDetectionAvailable = false;
+            this._screenShareActive = false;
+            this._screenShareProcesses = [];
+            stderrStream.read_line_async(GLib.PRIORITY_DEFAULT, null, (src2, res2) => {
+                let reason = 'exited unexpectedly';
+                try {
+                    let [line] = src2.read_line_finish_utf8(res2);
+                    if (line) reason = line;
+                } catch (e) { /* ignore */ }
+                global.logWarning('[' + UUID + '] Screen-share detection unavailable — ' + reason);
+                this._updateState();
+            });
+        });
+
+        let readNextLine = () => {
+            stdout.read_line_async(GLib.PRIORITY_DEFAULT, null, (source, res) => {
+                let line;
+                try {
+                    [line] = source.read_line_finish_utf8(res);
+                } catch (e) {
+                    return; // stream closed — wait_async above handles cleanup
+                }
+                if (line === null) return; // EOF
+                this._onScreenShareLine(line.trim());
+                readNextLine();
+            });
+        };
+        readNextLine();
+    }
+
+    _onScreenShareLine(line) {
+        if (line === 'READY') {
+            this._screenShareDetectionAvailable = true;
+            return;
+        }
+        if (line === 'IDLE') {
+            this._screenShareActive = false;
+            this._screenShareProcesses = [];
+            this._updateState();
+            return;
+        }
+        if (line.indexOf('ACTIVE') === 0) {
+            let pids = line.substring('ACTIVE'.length).trim()
+                .split(',').map(s => s.trim()).filter(s => s && s !== 'unknown');
+            this._screenShareActive = true;
+            if (pids.length === 0) {
+                this._screenShareProcesses = [];
+                this._updateState();
+                return;
+            }
+            resolveProcessNamesAsync(pids, (names) => {
+                this._screenShareProcesses = pids.map(pid => ({ pid: pid, name: names[pid] }));
+                this._updateState();
+            });
+        }
+    }
+
+    _stopScreenShareMonitor() {
+        if (this._screenShareProc) {
+            let proc = this._screenShareProc;
+            this._screenShareProc = null;
+            try {
+                proc.force_exit();
+            } catch (e) { /* already gone */ }
+        }
+    }
+
     _updateState() {
         let hasCam = this._cameraProcesses.length > 0;
         let hasMic = this._micProcesses.length > 0;
+        let hasScreenShare = this._screenShareActive;
         let micBroken = this._micDetectionAvailable === false;
 
         let state = STATE.IDLE;
@@ -317,32 +458,41 @@ class PrivacyIndicatorApplet extends Applet.IconApplet {
         else if (hasMic) state = STATE.MIC;
         this._state = state;
 
+        // Idle now means all three signals are quiet, not just cam/mic —
+        // screen-share-alone is not idle, it just has nothing to put
+        // inside the ring (falls back to the dim idle glyph, see
+        // ICON_FILES_SCREEN_SHARE).
+        let idle = (state === STATE.IDLE) && !hasScreenShare;
+
         // Icon/visibility are recomputed unconditionally every tick (not
         // just on a state change) so neither can stay desynced from the
         // actual state — this bit the applet once already (see commit
         // history / prior bugfix) when it was gated on a state transition.
         //
-        // Idle is normally hidden entirely (§8.1), but a broken detector
-        // needs to be discoverable even with nothing active — otherwise
-        // it's silently indistinguishable from "all quiet" forever, which
-        // defeats the point of surfacing it at all (see _checkMic).
-        let showError = (state === STATE.IDLE) && micBroken;
-        this._applyIcon(showError ? 'error' : state);
-        if (state === STATE.IDLE && !showError) {
+        // Idle is normally hidden entirely (§8.1), but a broken mic
+        // detector needs to be discoverable even with nothing active —
+        // otherwise it's silently indistinguishable from "all quiet"
+        // forever, which defeats the point of surfacing it at all (see
+        // _checkMic). Screen-share detection being unavailable does NOT
+        // get the same treatment — see _startScreenShareMonitor().
+        let showError = idle && micBroken;
+        this._applyIcon(showError ? 'error' : state, !showError && hasScreenShare);
+        if (idle && !showError) {
             this.actor.hide();
         } else {
             this.actor.show();
         }
 
-        this.set_applet_tooltip(this._buildTooltip(hasCam, hasMic, showError));
+        this.set_applet_tooltip(this._buildTooltip(hasCam, hasMic, hasScreenShare, showError));
     }
 
-    _buildTooltip(hasCam, hasMic, showError) {
+    _buildTooltip(hasCam, hasMic, hasScreenShare, showError) {
         if (showError) return _("Microphone detection unavailable — click for details");
-        if (!hasCam && !hasMic) return _("No camera or microphone activity detected.");
+        if (!hasCam && !hasMic && !hasScreenShare) return _("No camera or microphone activity detected.");
         let parts = [];
         if (hasCam) parts.push(_("Camera active"));
         if (hasMic) parts.push(_("Microphone active"));
+        if (hasScreenShare) parts.push(_("Screen being captured"));
         return parts.join(' · ');
     }
 
@@ -350,37 +500,54 @@ class PrivacyIndicatorApplet extends Applet.IconApplet {
         this.menu.removeAll();
         let hasCam = this._cameraProcesses.length > 0;
         let hasMic = this._micProcesses.length > 0;
+        let hasScreenShare = this._screenShareActive;
         let micBroken = this._micDetectionAvailable === false;
 
-        if (!hasCam && !hasMic && !micBroken) {
+        let sections = [];
+
+        if (hasCam) {
+            let items = [_("Camera:")];
+            for (let p of this._cameraProcesses) {
+                items.push('  ' + _("%s (PID %s)").format(p.name, p.pid));
+            }
+            sections.push(items);
+        }
+
+        if (hasMic) {
+            let items = [_("Microphone:")];
+            for (let p of this._micProcesses) {
+                let label = p.pid ? _("%s (PID %s)").format(p.name, p.pid) : p.name;
+                items.push('  ' + label);
+            }
+            sections.push(items);
+        } else if (micBroken) {
+            sections.push([_("Microphone: detection unavailable (pw-dump not found — requires PipeWire)")]);
+        }
+
+        if (hasScreenShare) {
+            let items = [_("Screen capture:")];
+            if (this._screenShareProcesses.length === 0) {
+                items.push('  ' + _("Unknown process"));
+            } else {
+                for (let p of this._screenShareProcesses) {
+                    items.push('  ' + _("%s (PID %s)").format(p.name, p.pid));
+                }
+            }
+            sections.push(items);
+        }
+
+        if (sections.length === 0) {
             this.menu.addMenuItem(new PopupMenu.PopupMenuItem(
                 _("No camera or microphone activity detected."), { reactive: false }));
             return;
         }
 
-        if (hasCam) {
-            this.menu.addMenuItem(new PopupMenu.PopupMenuItem(_("Camera:"), { reactive: false }));
-            for (let p of this._cameraProcesses) {
-                this.menu.addMenuItem(new PopupMenu.PopupMenuItem(
-                    '  ' + _("%s (PID %s)").format(p.name, p.pid), { reactive: false }));
+        sections.forEach((items, i) => {
+            if (i > 0) this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+            for (let line of items) {
+                this.menu.addMenuItem(new PopupMenu.PopupMenuItem(line, { reactive: false }));
             }
-        }
-
-        if (hasCam && (hasMic || micBroken)) {
-            this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        }
-
-        if (hasMic) {
-            this.menu.addMenuItem(new PopupMenu.PopupMenuItem(_("Microphone:"), { reactive: false }));
-            for (let p of this._micProcesses) {
-                let label = p.pid ? _("%s (PID %s)").format(p.name, p.pid) : p.name;
-                this.menu.addMenuItem(new PopupMenu.PopupMenuItem('  ' + label, { reactive: false }));
-            }
-        } else if (micBroken) {
-            this.menu.addMenuItem(new PopupMenu.PopupMenuItem(
-                _("Microphone: detection unavailable (pw-dump not found — requires PipeWire)"),
-                { reactive: false }));
-        }
+        });
     }
 
     on_applet_clicked(event) {
@@ -390,6 +557,7 @@ class PrivacyIndicatorApplet extends Applet.IconApplet {
 
     on_applet_removed_from_panel() {
         this._stopPolling();
+        this._stopScreenShareMonitor();
         if (this.settings) {
             this.settings.finalize();
         }
