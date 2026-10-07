@@ -222,9 +222,14 @@ license: GPL-2.0-or-later), `.../screenshot.png` (real popup + icon,
 captured live with actual camera+mic activity), `.../README.md`
 (user-facing description for the Spices page — distinct purpose from
 this repo's README, which is developer/install-focused), and
-`.../files/cinnamon-privacy-indicator@cray2015/` holding the exact
-same `applet.js`/`metadata.json`/`settings-schema.json`/`icons/` as
-this repo (diff-verified byte-identical at each sync). `icon.png`
+`.../files/cinnamon-privacy-indicator@cray2015/` holding the
+`applet.js`/`metadata.json`/`settings-schema.json`/`icons/` of this
+repo's camera/mic-only version 1.0 (diff-verified byte-identical at
+each sync up to the PR's third commit). This repo has since diverged:
+screen-share detection (§7.3, version 1.1) is deliberately not in the
+PR, since its `python3-xlib` helper doesn't fit Spices' plain-JS
+packaging. Don't sync `applet.js`/`metadata.json` to the fork without
+deciding that first. `icon.png`
 (96×96, derived from the both-active split design) is new — a static
 package-catalog icon, separate from the runtime state SVGs, required
 by `validate-spice` and not something this standalone repo needed
@@ -244,6 +249,8 @@ runs on `pull_request` (same-repo), while a fork PR triggers
 `pull_request_target`, which intentionally defers the full run to a
 maintainer for security reasons. Awaiting human review from the
 Cinnamon team.
+
+- [ ] Spices PR #9080 reviewed and merged by the Cinnamon team (no human review yet as of 2026-10-07; only the bot comment, already addressed)
 
 ## 5. Architecture
 Cinnamon panel (loads `applet.js`) → polling timer (GLib async, ~2s
@@ -535,15 +542,15 @@ process" if PID resolution failed for that client).
   during implementation: `pactl -f json list source-outputs` does work
   (pactl 16.1 on this system), but mic detection ended up using `pw-dump`
   instead, not `pactl` at all — see §4 and §7.2 for why.
-- **Icon assets: reuse existing system tray icon theme, or ship custom
-  SVGs?** — reusing theme icons is less work and matches Mint's visual
-  style automatically; custom SVGs give more control over the
-  both-active combined state. Leaning toward theme icons for M1–M5,
-  custom SVGs as a possible polish pass.
-- **Multiple simultaneous processes on one device** — if two processes
-  somehow hold the camera or mic at once, does the click popup list both?
-  Likely yes since `fuser`/`pactl` already return multiple PIDs/clients
-  when this happens; just needs to not assume a single result.
+- ~~**Icon assets: reuse existing system tray icon theme, or ship custom
+  SVGs?**~~ — resolved: custom SVGs in `icons/` (§8.1). The split
+  both-active icon and the screen-share ring variants needed more control
+  than theme icons give.
+- ~~**Multiple simultaneous processes on one device**~~ — resolved in
+  code: `_buildMenu()` lists every process in each section (camera PIDs
+  from `fuser`, every running `pw-dump` capture node, every screen-share
+  PID from the helper). Not yet exercised live with two processes on the
+  same device.
 
 ## 12. Files
 - `PROJECT_SPEC.md` — this file
