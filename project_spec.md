@@ -325,15 +325,20 @@ capture tool on this machine, not just a synthetic generator:
 
 | Request | Who uses it | Verified with |
 |---|---|---|
-| core `CopyArea` (62) with a root window as source | Chromium's WebRTC X11 capturer, "Entire Screen" mode | Real Google Meet share in Brave: ~57 calls/s from Brave's main process |
-| core `CopyArea` (62) from a pixmap obtained via Composite `NameWindowPixmap` | Chromium's capturer, "A Window" mode | Read from Chromium source; not yet confirmed on a real share (§10) |
+| core `CopyArea` (62) whose source belongs to a different process than the copier (the root window counts: the X server owns it) | Chromium's WebRTC X11 capturer: from the root window for "Entire Screen", straight from the target window for "A Window" | Real Meet shares in Brave: ~57 calls/s from the root window; ~41 calls/s from the shared Nemo window |
+| core `CopyArea` (62) from a pixmap the copier obtained via Composite `NameWindowPixmap` | Chromium's capturer when it uses Composite (per its source) | Not observed on a real share — Brave's window share copied the window directly |
 | `XFixes GetCursorImage` | GPU-texture window capture that composites the cursor, e.g. OBS "Window Capture (Xcomposite)" | Real OBS window source: exactly 30/s (its output fps), zero while the source is hidden |
 | core `GetImage` (73), MIT-SHM `ShmGetImage` | Screenshot tools, `ffmpeg -f x11grab`, Chromium's fallback when shared pixmaps are unavailable | Synthetic generator |
 
 `CopyArea` is ordinary drawing traffic for most apps, which is why only
-copies *out of* a root window or a named window pixmap count; the
-helper tracks named pixmaps from `NameWindowPixmap` requests and drops
-them on `FreePixmap`. `GetCursorImage` is not called by anything else
+copies of *another process's* pixels count. An XID's high bits identify
+the X client that created it; the helper maps that client to a PID via
+X-Resource and compares processes, not connections, because one app
+can hold several connections (Brave holds two). Verified for 45s of
+normal desktop use: 185 `CopyArea` calls, none cross-process. The
+helper also tracks pixmaps named via `NameWindowPixmap` (dropped on
+`FreePixmap`), since the copier owns those and the cross-process rule
+can't see them. `GetCursorImage` is not called by anything else
 on a normal Cinnamon desktop — verified for 30s with the cursor
 constantly changing shape (links, text fields, resize edges): OBS was
 the only caller. Muffin tracks the cursor without it.
@@ -348,9 +353,12 @@ Meet share went undetected. A follow-up investigation then wrongly
 blamed a GPU/DRM zero-copy capture path (straces of Brave's GPU process
 showed only ordinary rendering ioctls). One 10-second RECORD histogram
 of everything the real capture process sent found the real request
-immediately. Lesson: verify new signals against the real tool's
-unfiltered request stream, and read the capturer's source rather than
-summaries of it.
+immediately. The next fix then repeated the mistake in miniature: it
+accepted window-share copies only from `NameWindowPixmap` pixmaps,
+because Chromium's source suggested so, and a real "A Window" share
+went undetected — Brave copied straight from the target window. Lesson:
+verify each signal against the real tool's unfiltered request stream;
+source code tells you what's possible, not which path runs.
 
 **Implementation** (`screen_share_helper.py`, run via `python3`, not
 GJS — no GObject-Introspection binding for Xlib/RECORD/XRes exists, so
@@ -416,11 +424,19 @@ covers anything else that reads pixels through the requests above.
 Known gaps:
 - GPU-texture window capture with cursor capture turned off (e.g. OBS
   with "Capture Cursor" unchecked) sends no per-frame request at all.
-- A window capture set up before the helper started (e.g. across a
-  Cinnamon reload) — its `NameWindowPixmap` was never seen, so copies
-  from that pixmap aren't recognized until the capturer re-names it.
-- Browser "Tab" sharing — captured inside the browser from its own
-  rendering, never touching the X server.
+- A Composite-based window capture set up before the helper started
+  (e.g. across a Cinnamon reload) — its `NameWindowPixmap` was never
+  seen. Doesn't affect Brave's window share, which copies the window
+  directly.
+- Browser **"Tab" sharing — a hard limit, not a missing signal.**
+  Verified on a real Meet tab share: Brave sent no capture-related X
+  requests and opened no "is sharing" window; the tab is captured from
+  the browser's own rendering. Nothing outside the browser can observe
+  it, on X11 or Wayland. The browser's own indicator (red dot on the
+  tab, "Sharing this tab" bar) is the only one.
+- A window share of a minimized window or one on another workspace —
+  X11 has no pixels for it, so Chromium issues no copies (and the share
+  shows a frozen frame); arguably correctly not flagged.
 - Wayland — the mechanism doesn't exist there (logged once via
   `global.logWarning`, degrades silently; rest of the applet
   unaffected).
@@ -511,7 +527,8 @@ process" if PID resolution failed for that client).
 13. [x] A real Google Meet "Entire Screen" share in Brave turns the ring on and resolves the process to `brave` — verified 2026-10-07 via Looking Glass state and a panel screenshot; ring cleared after the share stopped
 14. [x] An OBS "Window Capture (Xcomposite)" source turns the ring on while visible (resolves to `obs`) and off when hidden — verified 2026-10-07
 15. [x] Normal desktop use with the cursor constantly changing shape does not trigger the ring — verified 2026-10-07: OBS was the only `GetCursorImage` caller over 30s
-16. [ ] A Meet/Chrome "A Window" share turns the ring on — implemented (`CopyArea` from a `NameWindowPixmap` pixmap) but not yet explicitly confirmed on a real share
+16. [x] A Meet "A Window" share in Brave turns the ring on (resolves to `brave`) — verified 2026-10-07 via Looking Glass state and a panel screenshot, after the cross-process `CopyArea` rule replaced the `NameWindowPixmap`-only one
+17. [x] A Meet "A Tab" share is confirmed undetectable from outside the browser (no X traffic, no sharing window) — documented as a hard limit in §7.3, not a bug
 
 ## 11. Open questions
 - ~~**Does the installed `pactl` support `--format=json`?**~~ — resolved

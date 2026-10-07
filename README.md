@@ -148,25 +148,27 @@ directly, with no permission check and no record of it anywhere in
 itself (the `RECORD` extension) for the requests that read screen
 pixels, not a list of known apps:
 
-- `CopyArea` out of the root window or out of another window's pixmap
-  — how Chromium-based browsers (Meet, Teams, Zoom in the browser) do
-  "Entire Screen" and "A Window" shares.
+- `CopyArea` of another app's pixels (the root window, or another
+  app's window) — how Chromium-based browsers (Meet, Teams, Zoom in the
+  browser) do "Entire Screen" and "A Window" shares.
 - `GetCursorImage` polled every frame — how tools that read a window on
   the GPU (OBS "Window Capture (Xcomposite)") draw the cursor in.
 - `GetImage`/`ShmGetImage` — screenshot tools, `ffmpeg -f x11grab`, and
   fallback paths.
 
-Verified on real shares: Google Meet "Entire Screen" in Brave and an
-OBS window source. See `project_spec.md` §7.3 for how each signal was
-found and verified.
+Verified on real shares: Google Meet "Entire Screen" and "A Window" in
+Brave, and an OBS window source. See `project_spec.md` §7.3 for how
+each signal was found and verified.
 
 Not covered:
+- A browser **"Tab"** share. The browser captures the tab from its own
+  rendering and never asks the X server for anything, so nothing
+  outside the browser can see it (verified on a real Meet tab share).
+  Rely on the browser's own indicator for that case.
 - OBS-style window capture with **"Capture Cursor" turned off** — no
   request is sent per frame at all.
-- A window share that was already running before the applet started
-  (e.g. across a Cinnamon reload) — restart the share to pick it up.
-- A browser **"Tab"** share — captured inside the browser, never
-  touching the X server.
+- Sharing a minimized window, or one on another workspace — X11 has no
+  pixels for it, so nothing is actually being read.
 
 What it deliberately does **not** flag:
 - A single screenshot — the ring only lights up after several reads in

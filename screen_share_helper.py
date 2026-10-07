@@ -29,11 +29,18 @@
 # Signals counted as "reading the screen", each verified against a real
 # capture tool on this machine (see project_spec.md 7.3):
 #   - core GetImage / MIT-SHM ShmGetImage on any drawable.
-#   - core CopyArea whose source is a root window, or a window pixmap
-#     obtained via Composite NameWindowPixmap. Chromium's WebRTC X11
-#     capturer (x_server_pixel_buffer.cc) prefers this over ShmGetImage:
-#     root window for "Entire Screen", a named window pixmap for
-#     "A Window". Watching only *GetImage misses all Chromium shares.
+#   - core CopyArea whose source belongs to a different process than the
+#     one copying (the root window counts: the X server owns it). Apps
+#     copy between their own windows/pixmaps constantly; copying another
+#     app's window is reading its pixels. This is how Chromium's WebRTC
+#     X11 capturer (x_server_pixel_buffer.cc) works: CopyArea into a
+#     MIT-SHM pixmap, from the root window for "Entire Screen" and
+#     straight from the target window for "A Window" (observed in Brave;
+#     it did not use NameWindowPixmap). Watching only *GetImage misses
+#     every Chromium share.
+#   - core CopyArea from a pixmap obtained via Composite NameWindowPixmap
+#     (the copier owns that pixmap, so the rule above can't see it). From
+#     Chromium's source; not observed on a real share yet.
 #   - XFixes GetCursorImage. Tools that read a window as a GPU texture
 #     (OBS "Window Capture (Xcomposite)") send no pixel-reading request
 #     per frame at all, but they poll the cursor image once per output
@@ -100,6 +107,9 @@ def main():
     try:
         record_dpy = display.Display()
         res_dpy = display.Display()
+        # python-xlib connections aren't thread-safe; this one is used
+        # only from the RECORD callback thread.
+        owner_dpy = display.Display()
     except Exception as e:
         print("cannot connect to X display: %s" % e, file=sys.stderr)
         sys.exit(1)
@@ -114,11 +124,43 @@ def main():
         print("X-Resource extension not available: %s" % e, file=sys.stderr)
         sys.exit(1)
 
-    # CopyArea is ordinary drawing traffic for most apps; only a copy
-    # whose *source* is a root window or a named window pixmap is a
-    # screen read.
-    root_ids = {record_dpy.screen(i).root.id
-                for i in range(record_dpy.screen_count())}
+    # An XID's high bits identify the client that created it; the mask is
+    # the same for every client on a server.
+    resource_mask = record_dpy.display.info.resource_id_mask
+
+    # Client XID base -> PID, via X-Resource. Compared by process, not
+    # connection, because one app can hold several connections (Brave
+    # holds two) and copying between them is not reading another app.
+    # Short TTL because the server reuses a base after a client leaves.
+    PID_CACHE_TTL = 30.0
+    pid_cache = {}
+
+    def pid_of(base):
+        if base == 0:
+            return None  # the X server itself (root window etc.)
+        now = time.monotonic()
+        hit = pid_cache.get(base)
+        if hit and now - hit[1] < PID_CACHE_TTL:
+            return hit[0]
+        pid = None
+        try:
+            r = owner_dpy.res_query_client_ids(
+                [{'client': base, 'mask': res.LocalClientPIDMask}])
+            for item in r.ids:
+                if item.value:
+                    pid = item.value[0]
+        except Exception:
+            pass
+        pid_cache[base] = (pid, now)
+        return pid
+
+    def copies_foreign_pixels(src, requester_base):
+        owner_base = src & ~resource_mask
+        if owner_base == requester_base:
+            return False
+        owner_pid = pid_of(owner_base)
+        return owner_pid is None or owner_pid != pid_of(requester_base)
+
     # Pixmap XIDs are server-wide unique, so one set covers all clients.
     # Only touched from the RECORD thread. A capture already set up
     # before this helper started is unknown until it re-names its pixmap.
@@ -169,7 +211,8 @@ def main():
             if len(data) < 8:
                 return
             src = u32(data, 4)
-            if src not in root_ids and src not in named_window_pixmaps:
+            if (src not in named_window_pixmaps and
+                    not copies_foreign_pixels(src, reply.id_base)):
                 return
         elif not (
             opcode == X_GetImage or
