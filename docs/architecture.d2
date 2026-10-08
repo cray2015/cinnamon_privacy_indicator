@@ -84,3 +84,10 @@ screen_share_helper -> x11_xres: resolves id_base -> PID
 screen_share_helper -> applet.screen_share_state: READY / ACTIVE <pids> / IDLE\n(stdout, read_line_async)
 applet.screen_share_state -> applet.panel_icon: draws red ring overlay\non whichever base icon shows
 applet.screen_share_state -> applet.popup_menu: adds "Screen capture:" section
+
+message_tray: Cinnamon message tray\n(notification list; drops all when\n"Do not disturb" is on) {
+  shape: rectangle
+}
+
+applet.state_machine -> message_tray: Camera / Microphone in use\nwhen a new process starts\n(if notifications-enabled)
+applet.screen_share_state -> message_tray: Screen being captured\nwhen a new process starts

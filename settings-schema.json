@@ -7,5 +7,10 @@
         "step": 1,
         "units": "seconds",
         "description": "Polling interval"
+    },
+    "notifications-enabled": {
+        "type": "switch",
+        "default": true,
+        "description": "Notify when the camera, microphone or screen capture starts"
     }
 }

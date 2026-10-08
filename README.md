@@ -191,11 +191,23 @@ removed instance's helper keeps running (consuming the same negligible
 CPU a normal active ring would — see `project_spec.md` §7.3's measured
 cost) until the next Cinnamon restart or logout, not indefinitely.
 
+## Notifications
+
+When an app **starts** using the camera, microphone or screen capture,
+you get a notification naming it ("Camera in use: brave (PID 2588646)").
+Nothing is shown when it stops. Notifications stay in Cinnamon's
+notification list until dismissed, also fire (with sound) while the
+screen is locked, and respect Cinnamon's "Do not disturb". There's no
+cooldown, so an app that pauses and resumes its mic is reported again.
+Opening Cinnamon's Sound settings triggers a microphone notification,
+because its input level meter really does read the mic.
+
 ## Settings
 
 Right-click the applet → **Configure...** to change the poll interval
-(default 2s, 1-30s range). Screen-share detection has no separate
-setting — it's automatic when available, silent when not (see above).
+(default 2s, 1-30s range) or turn notifications off (on by default).
+Screen-share detection has no separate setting — it's automatic when
+available, silent when not (see above).
 
 ## License
 

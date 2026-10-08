@@ -4,9 +4,12 @@
 const Applet = imports.ui.applet;
 const PopupMenu = imports.ui.popupMenu;
 const Settings = imports.ui.settings;
+const Main = imports.ui.main;
+const MessageTray = imports.ui.messageTray;
 const Mainloop = imports.mainloop;
 const Gio = imports.gi.Gio;
 const GLib = imports.gi.GLib;
+const St = imports.gi.St;
 const Gettext = imports.gettext;
 const ByteArray = imports.byteArray;
 
@@ -47,6 +50,35 @@ const ICON_FILES_SCREEN_SHARE = {
     [STATE.CAMERA]: 'camera-active-share.svg',
     [STATE.MIC]: 'mic-active-share.svg',
     [STATE.BOTH]: 'both-active-share.svg'
+};
+
+// One notification per kind of activity, shown when a process starts
+// using it (never on stop).
+const NOTIFY_KINDS = {
+    camera: { title: () => _("Camera in use"), icon: 'camera-active.svg' },
+    mic: { title: () => _("Microphone in use"), icon: 'mic-active.svg' },
+    screen: { title: () => _("Screen being captured"), icon: 'idle-share.svg' }
+};
+
+function iconFromFile(path, size) {
+    return new St.Icon({ gicon: new Gio.FileIcon({ file: Gio.File.new_for_path(path) }), icon_size: size });
+}
+
+// Cinnamon's message tray respects its own "Do not disturb" switch
+// (org.cinnamon.desktop.notifications display-notifications) for every
+// source, so nothing here needs to check it.
+function PrivacyNotificationSource(iconPath) {
+    this._init(iconPath);
+}
+
+PrivacyNotificationSource.prototype = {
+    __proto__: MessageTray.Source.prototype,
+
+    _init(iconPath) {
+        MessageTray.Source.prototype._init.call(this, _("Privacy Indicator"));
+        this._setSummaryIcon(iconFromFile(iconPath, this.ICON_SIZE));
+    }
+    // open() is inherited as a no-op: clicking a notification does nothing.
 };
 
 // fuser sends PIDs to stdout and everything else (access-type letters, errors
@@ -171,10 +203,16 @@ class PrivacyIndicatorApplet extends Applet.IconApplet {
         // icon) — see _startScreenShareMonitor() and project_spec.md §7.3.
         this._screenShareDetectionAvailable = null;
 
+        // Processes already seen using each kind of activity, so a
+        // notification fires only when a new one starts.
+        this._knownUsers = { camera: new Set(), mic: new Set(), screen: new Set() };
+        this._notifySource = null;
+
         this.settings = new Settings.AppletSettings(this, metadata.uuid, instance_id);
         this._pollIntervalSec = 2;
         this.settings.bind('poll-interval', 'pollIntervalSetting', this._onPollIntervalChanged.bind(this));
         this._pollIntervalSec = Math.max(1, this.pollIntervalSetting || 2);
+        this.settings.bind('notifications-enabled', 'notificationsEnabled');
 
         this.menuManager = new PopupMenu.PopupMenuManager(this);
         this.menu = new Applet.AppletPopupMenu(this, orientation);
@@ -234,12 +272,14 @@ class PrivacyIndicatorApplet extends Applet.IconApplet {
 
         this._checkCamera((processes) => {
             this._cameraProcesses = processes;
+            this._reportUsers('camera', processes, processes.length > 0);
             camDone = true;
             finish();
         });
 
         this._checkMic((processes) => {
             this._micProcesses = processes;
+            this._reportUsers('mic', processes, processes.length > 0);
             micDone = true;
             finish();
         });
@@ -382,6 +422,7 @@ class PrivacyIndicatorApplet extends Applet.IconApplet {
             this._screenShareDetectionAvailable = false;
             this._screenShareActive = false;
             this._screenShareProcesses = [];
+            this._reportUsers('screen', [], false);
             stderrStream.read_line_async(GLib.PRIORITY_DEFAULT, null, (src2, res2) => {
                 let reason = 'exited unexpectedly';
                 try {
@@ -417,6 +458,7 @@ class PrivacyIndicatorApplet extends Applet.IconApplet {
         if (line === 'IDLE') {
             this._screenShareActive = false;
             this._screenShareProcesses = [];
+            this._reportUsers('screen', [], false);
             this._updateState();
             return;
         }
@@ -426,11 +468,13 @@ class PrivacyIndicatorApplet extends Applet.IconApplet {
             this._screenShareActive = true;
             if (pids.length === 0) {
                 this._screenShareProcesses = [];
+                this._reportUsers('screen', [], true);
                 this._updateState();
                 return;
             }
             resolveProcessNamesAsync(pids, (names) => {
                 this._screenShareProcesses = pids.map(pid => ({ pid: pid, name: names[pid] }));
+                this._reportUsers('screen', this._screenShareProcesses, true);
                 this._updateState();
             });
         }
@@ -444,6 +488,45 @@ class PrivacyIndicatorApplet extends Applet.IconApplet {
                 proc.force_exit();
             } catch (e) { /* already gone */ }
         }
+    }
+
+    // Remembers who is using `kind` now and notifies about anyone new.
+    // No cooldown by design: a process that stops and starts again is
+    // notified again.
+    _reportUsers(kind, processes, active) {
+        let users = processes.length > 0 ? processes
+            : (active ? [{ pid: null, name: _("unknown process") }] : []);
+        let current = new Set();
+        let started = [];
+        for (let p of users) {
+            let key = p.pid ? 'pid:' + p.pid : 'name:' + p.name;
+            // One app can hold several streams at once (OBS: two mic
+            // capture nodes) -- report it once.
+            if (current.has(key)) continue;
+            current.add(key);
+            if (!this._knownUsers[kind].has(key)) started.push(p);
+        }
+        this._knownUsers[kind] = current;
+        if (started.length > 0 && this.notificationsEnabled) {
+            this._notify(kind, started);
+        }
+    }
+
+    _notify(kind, processes) {
+        let iconDir = this._metadata.path + '/icons/';
+        if (!this._notifySource) {
+            this._notifySource = new PrivacyNotificationSource(iconDir + 'both-active.svg');
+            // The tray destroys a source once its last notification is
+            // gone; recreate it on the next notify.
+            this._notifySource.connect('destroy', () => { this._notifySource = null; });
+            Main.messageTray.add(this._notifySource);
+        }
+        let body = processes.map(p =>
+            p.pid ? _("%s (PID %s)").format(p.name, p.pid) : p.name).join(', ');
+        let notification = new MessageTray.Notification(
+            this._notifySource, NOTIFY_KINDS[kind].title(), body,
+            { icon: iconFromFile(iconDir + NOTIFY_KINDS[kind].icon, this._notifySource.ICON_SIZE) });
+        this._notifySource.notify(notification);
     }
 
     _updateState() {
@@ -558,6 +641,9 @@ class PrivacyIndicatorApplet extends Applet.IconApplet {
     on_applet_removed_from_panel() {
         this._stopPolling();
         this._stopScreenShareMonitor();
+        if (this._notifySource) {
+            this._notifySource.destroy();
+        }
         if (this.settings) {
             this.settings.finalize();
         }

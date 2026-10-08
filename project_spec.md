@@ -282,7 +282,7 @@ of truth; the rendered SVG is not committed.
 |---|---|
 | `metadata.json` | Applet manifest — uuid, name, description, Cinnamon version compat (`cinnamon-version: ["4.0"]`) |
 | `applet.js` | Main logic: polling loop, subprocess calls, state machine, icon rendering, click popup |
-| `settings-schema.json` | Applet settings: poll interval |
+| `settings-schema.json` | Applet settings: poll interval, notifications switch (§8.3) |
 | `icons/` | Panel icon assets: idle (never shown, see §8.1), camera-active, mic-active, both-active, `error` (shown persistently when mic detection is unavailable), and a `-share` ring variant of each of the first four (see §7.3/§8.1) |
 | `screen_share_helper.py` | Long-lived X11 RECORD-extension listener for screen-share detection — see §7.3 |
 
@@ -311,6 +311,8 @@ can't reliably distinguish (see §4). Process name comes from each node's
 `application.name` (falling back to `node.name`); `application.process.id`
 gives the PID when the client sets it — some ALSA-plugin-bridged clients
 don't, so the click popup omits the PID rather than showing a wrong one.
+
+- [ ] Flatpak apps report their sandbox PID, not the host PID, in mic detection (OBS Flatpak shows "PID 2" in the popup and notifications) — find a host-side PID source in `pw-dump` (e.g. the client's `pipewire.sec.pid`) and verify it against a real Flatpak app
 
 ### 7.3 Screen-share detection
 Unlike camera (v4l2 device node) and mic (PipeWire graph), X11 has no
@@ -509,6 +511,36 @@ A "Screen capture:" section is added the same way when the ring is
 showing, listing the resolved process name(s) from §7.3 (or "Unknown
 process" if PID resolution failed for that client).
 
+### 8.3 Notifications
+When a process **starts** using the camera, microphone or screen
+capture, the applet raises a Cinnamon notification: "Camera in use",
+"Microphone in use" or "Screen being captured", with the process name
+and PID, and that activity's icon. Decisions (all the user's):
+- **Start only**, never on stop.
+- **All three on by default**, behind one settings switch
+  (`notifications-enabled`).
+- **No cooldown.** A process that stops and starts again is notified
+  again (e.g. OBS's mic stream pausing and resuming).
+- **Clicking does nothing** (the base `MessageTray.Source.open()` is a
+  no-op).
+
+"Starts" means a process that wasn't in the previous check's set for
+that activity, keyed by PID (or name when the PID is unknown). One
+process holding several streams (OBS has two mic capture nodes) is
+reported once. Applet startup counts as a start: anything already
+active when the applet loads (login, Cinnamon restart) notifies once.
+
+Notifications are not transient, so they stay in Cinnamon's
+notification list until dismissed — useful when they fire while you're
+away. Cinnamon's "Do not disturb" (`display-notifications`) drops them
+in the message tray itself, so the applet doesn't check it. Verified
+2026-10-08: each of camera (Meet in Brave), mic (OBS) and screen
+capture (synthetic) raised a notification; a capture while the screen
+was locked raised one and played the notification sound; with the
+switch off, a capture was still detected but nothing was raised. Cinnamon's
+own Sound settings window triggers a mic notification while its input
+level meter is open, which is correct: it does read the mic.
+
 ## 9. Milestones
 - [x] M1 — Applet skeleton loads in Cinnamon (visible in panel, static icon, no detection logic yet)
 - [x] M2 — Camera detection working; icon switches state within one poll interval of opening/closing a test capture
@@ -517,6 +549,7 @@ process" if PID resolution failed for that client).
 - [x] M5 — Click popup resolves and displays correct process name(s)
 - [x] M6 (backlog) — Poll interval configurable via applet settings UI (poll-interval only; icon-style knob from §6 wasn't wired up — not needed once custom SVGs were the settled approach)
 - [x] M7 — Screen-share detection (§7.3): RECORD-based helper process, red ring overlay on all four base icons, PID resolution, measured compute cost, and verified process-lifecycle cleanup (with one documented residual gap — see §7.3)
+- [x] M8 — Start notifications for camera, mic and screen capture, with a settings switch (§8.3)
 
 ## 10. Acceptance criteria
 1. [x] With no camera or mic activity, panel icon shows idle state — verified via Looking Glass eval (`_state === 'idle'`) and a panel screenshot
@@ -536,6 +569,9 @@ process" if PID resolution failed for that client).
 15. [x] Normal desktop use with the cursor constantly changing shape does not trigger the ring — verified 2026-10-07: OBS was the only `GetCursorImage` caller over 30s
 16. [x] A Meet "A Window" share in Brave turns the ring on (resolves to `brave`) — verified 2026-10-07 via Looking Glass state and a panel screenshot, after the cross-process `CopyArea` rule replaced the `NameWindowPixmap`-only one
 17. [x] A Meet "A Tab" share is confirmed undetectable from outside the browser (no X traffic, no sharing window) — documented as a hard limit in §7.3, not a bug
+18. [x] Each activity raises a "… in use" / "Screen being captured" notification when a process starts using it — verified 2026-10-08: camera (Meet in Brave), mic (OBS), screen capture (synthetic), checked from the applet's notification source and a screenshot of the popup
+19. [x] A capture that starts while the screen is locked still raises a notification and plays the sound — verified 2026-10-08 (`cinnamon-screensaver-command --query` reported active during the capture; user heard the sound and the entry stayed in the notification list)
+20. [x] With the notification switch off, activity is still detected but no notification is raised — verified 2026-10-08
 
 ## 11. Open questions
 - ~~**Does the installed `pactl` support `--format=json`?**~~ — resolved
