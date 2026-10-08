@@ -226,10 +226,12 @@ this repo's README, which is developer/install-focused), and
 `applet.js`/`metadata.json`/`settings-schema.json`/`icons/` of this
 repo's camera/mic-only version 1.0 (diff-verified byte-identical at
 each sync up to the PR's third commit). This repo has since diverged:
-screen-share detection (§7.3, version 1.1) is deliberately not in the
-PR, since its `python3-xlib` helper doesn't fit Spices' plain-JS
-packaging. Don't sync `applet.js`/`metadata.json` to the fork without
-deciding that first. `icon.png`
+screen-capture detection (§7.3) and notifications (§8.3), version 1.1,
+are not in the PR. Plan (user's decision, 2026-10-08): submit them to
+Spices as a follow-up once PR #9080 is approved and merged, not by
+growing the open PR. The Python helper is not a blocker: 41 approved
+Spices applets ship `.py` files, and `color-picker@fmete` imports
+python-xlib (checked in the local Spices clone, 2026-10-08). `icon.png`
 (96×96, derived from the both-active split design) is new — a static
 package-catalog icon, separate from the runtime state SVGs, required
 by `validate-spice` and not something this standalone repo needed
@@ -251,6 +253,7 @@ maintainer for security reasons. Awaiting human review from the
 Cinnamon team.
 
 - [ ] Spices PR #9080 reviewed and merged by the Cinnamon team (no human review yet as of 2026-10-07; only the bot comment, already addressed)
+- [ ] After #9080 merges, submit screen-capture detection and notifications (version 1.1) to Spices as a follow-up PR
 
 ## 5. Architecture
 Cinnamon panel (loads `applet.js`) → polling timer (GLib async, ~2s
@@ -572,6 +575,7 @@ level meter is open, which is correct: it does read the mic.
 18. [x] Each activity raises a "… in use" / "Screen being captured" notification when a process starts using it — verified 2026-10-08: camera (Meet in Brave), mic (OBS), screen capture (synthetic), checked from the applet's notification source and a screenshot of the popup
 19. [x] A capture that starts while the screen is locked still raises a notification and plays the sound — verified 2026-10-08 (`cinnamon-screensaver-command --query` reported active during the capture; user heard the sound and the entry stayed in the notification list)
 20. [x] With the notification switch off, activity is still detected but no notification is raised — verified 2026-10-08
+21. [x] The README's terminal-free Quick test (webcamtests.com, mictests.com, WebRTC getDisplayMedia demo) shows each icon, the ring and the notifications as described — run by the user 2026-10-08
 
 ## 11. Open questions
 - ~~**Does the installed `pactl` support `--format=json`?**~~ — resolved

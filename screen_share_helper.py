@@ -95,7 +95,7 @@ X_XFixesGetCursorImage = 4  # XFIXES minor opcode
 # MIN_SUSTAINED_EVENTS within SUSTAIN_WINDOW filters out the former while
 # catching the latter almost immediately. IDLE_GRACE avoids flapping
 # between frames of a capture that isn't running at a perfectly steady
-# rate. See README.md "Screen-share detection" for how these were chosen.
+# rate. See project_spec.md 7.3 for how these were chosen.
 SUSTAIN_WINDOW = 1.5
 MIN_SUSTAINED_EVENTS = 3
 IDLE_GRACE = 2.5

@@ -1,217 +1,155 @@
 # Cinnamon Privacy Indicator
 
-A Cinnamon panel applet that lights up when the camera or microphone is
-actively in use, and shows which process is responsible on click. A red
-ring around the icon additionally indicates the screen is being
-captured (screen share, recording, remote access) — see **Screen-share
-detection** below for exactly what that does and doesn't catch. See
-`project_spec.md` for the full design rationale and `docs/architecture.d2`
-for the architecture diagram.
+A Cinnamon panel applet that tells you when something is using your
+camera, microphone or screen, like the privacy indicators in macOS and
+iOS.
 
-**Status:** the camera/mic feature set is submitted to [Cinnamon Spices](https://cinnamon-spices.linuxmint.com/applets)
-— see [PR #9080](https://github.com/linuxmint/cinnamon-spices-applets/pull/9080),
-awaiting review. Until it's merged, install manually using the steps
-below; this repo itself is not affected by whether that PR is
-accepted — it stays a normal standalone clone-and-copy install either
-way (see `project_spec.md` §4.3 for how the two relate). Screen-share
-detection (below) is **not** part of that PR — it ships only in this
-standalone repo for now, since it adds a Python runtime dependency that
-doesn't fit Cinnamon Spices' plain-JS packaging conventions; see
-`project_spec.md` §7.3.
+- **Panel icon:** green for the camera, orange for the microphone,
+  split green/orange for both. It only appears while something is
+  active. Click it to see which apps are responsible.
+- **Screen-capture ring:** a red ring around the icon while an app
+  captures your screen (screen sharing, recording, remote access).
+- **Notifications:** names the app as soon as it starts using any of
+  the three, even while your screen is locked.
 
-**Requirements:** Cinnamon 4.0+ (declared in `metadata.json`; older
-versions refuse to load with a clean error instead of crashing). Camera
-detection needs `fuser` (psmisc, near-universal on desktop distros).
-Microphone detection needs PipeWire (`pw-dump`) — on a PulseAudio-only
-system without PipeWire, mic detection is unavailable; see §4.1 of
-`project_spec.md` for how that's surfaced instead of silently doing
-nothing. Screen-share detection needs X11 (not Wayland) and
-`python3-xlib` — see **Screen-share detection** below; it degrades
-silently (no ring, ever) if either is missing, the rest of the applet
-is unaffected either way. Only tested so far on Linux Mint 22.3 /
-Cinnamon 6.6.9 / X11 — see §4.1 for other untested-but-plausible-risk
-areas (older Cinnamon, Wayland/portal camera access, true dual-webcam
-hardware).
+**Status:** version 1.0 (camera and microphone only) is submitted to
+[Cinnamon Spices](https://cinnamon-spices.linuxmint.com/applets)
+([PR #9080](https://github.com/linuxmint/cinnamon-spices-applets/pull/9080)),
+awaiting review. Screen-capture detection and notifications will follow
+in the official Cinnamon Spices repo once the applet itself is approved
+and merged. Until then, install from this repo.
+
+## Requirements
+
+- Cinnamon 4.0 or newer
+- `fuser` (package `psmisc`) for the camera
+- PipeWire (`pw-dump`) for the microphone
+- An X11 session and `python3-xlib` for screen capture (doesn't work on Wayland)
+
+Everything except Cinnamon is optional: a missing piece only disables
+its own feature. Tested on Linux Mint 22.3, Cinnamon 6.6.9, X11.
 
 ## Install
 
-**1. Get the code.**
-
 ```bash
-git clone <this-repository-url> cinnamon-privacy-indicator
-cd cinnamon-privacy-indicator
-```
-
-(Or download and extract a release archive instead — either way you
-need a local directory containing `metadata.json`, `applet.js`, etc.)
-
-**2. Check dependencies.** Both are near-universal on a Cinnamon
-desktop, but confirm before filing a "camera/mic detection doesn't
-work" issue:
-
-```bash
-which fuser                     # psmisc — needed for camera detection
-which pw-dump                   # PipeWire — needed for microphone detection
-python3 -c "import Xlib.ext.record, Xlib.ext.res"  # python3-xlib — needed for screen-share detection
-```
-
-- `fuser` missing → install `psmisc` (`sudo apt install psmisc` on
-  Debian/Ubuntu/Mint, or your distro's equivalent).
-- `pw-dump` missing → your system isn't running PipeWire as its audio
-  server (check `pactl info` for `Server Name: PulseAudio (on
-  PipeWire ...)`). Camera detection still works fine without it —
-  microphone detection just won't, and the applet tells you so instead
-  of silently doing nothing (see **Requirements** above and §4.1 of
-  `project_spec.md`).
-- `python3-xlib` missing or the import fails → install it
-  (`sudo apt install python3-xlib` on Debian/Ubuntu/Mint, or `pip
-  install python-xlib`). Camera and mic detection are completely
-  unaffected — only the red screen-share ring never appears.
-
-**3. Copy into Cinnamon's applets directory.**
-
-```bash
+git clone https://github.com/cray2015/cinnamon_privacy_indicator.git
+cd cinnamon_privacy_indicator
+sudo apt install psmisc python3-xlib   # if not already installed
 mkdir -p ~/.local/share/cinnamon/applets/cinnamon-privacy-indicator@cray2015
 cp -r ./* ~/.local/share/cinnamon/applets/cinnamon-privacy-indicator@cray2015/
 ```
 
-**4. Reload Cinnamon so it picks up the new applet** — see **Reload
-after changes** below.
-
-**5. Add it to a panel.** Right-click any panel → **Applets** → find
+Then reload Cinnamon (below), right-click a panel → **Applets** → find
 **Privacy Indicator** → **+ Add to panel**.
 
-The applet has no permanent panel icon — it only appears while the
-camera or microphone is actively in use (see §8.1 of `project_spec.md`),
-or if microphone detection itself is unavailable (a gray "!" icon —
-click it for details; see §4.1). When otherwise idle there's nothing to
-click, so manage it (remove it, change its poll interval) from
-**Applets** in that same panel-editing window instead of right-clicking
-a live icon.
+The icon is hidden while nothing is active, so to configure or remove
+the applet, use that same **Applets** window.
 
 ## Reload after changes
+
+Press Alt+F2, type `r`, press Enter. Or in a terminal:
 
 ```bash
 cinnamon --replace &
 ```
 
-Equivalent to Alt+F2 → `r` → Enter.
+## Quick test
 
-## Verify
+No terminal needed. The icon updates within about 2 seconds. Screen
+capture has been tested with Chromium-based browsers (Brave, Chrome);
+other browsers may work but are untested.
 
-There's no automated test suite — this is a live-desktop-shell applet.
-Check it manually against `project_spec.md` §10:
+| Test | What to do | What you should see |
+|---|---|---|
+| Camera | Open [webcamtests.com](https://webcamtests.com), start the test and allow the camera | Green icon and a "Camera in use" notification |
+| Microphone | Open [mictests.com](https://mictests.com), click **Test my mic** and allow the mic | Orange icon and a "Microphone in use" notification |
+| Screen capture | Open the [WebRTC screen-sharing demo](https://webrtc.github.io/samples/src/content/getusermedia/getdisplaymedia/), click **Start** and choose **Entire screen** or **Window** (not a tab) | Red ring around the icon and a "Screen being captured" notification |
 
-- No activity → no icon in the panel at all (hidden, not just dimmed).
-- Open a webcam stream (`cheese`, or a browser tab requesting camera
-  permission) → the green camera icon appears within ~2s; click shows
-  the process name and PID.
-- Start a recording (`arecord -d 10 /tmp/test.wav`, or a browser tab
-  requesting mic permission) → the orange mic icon appears; click shows
-  the process name.
-- Run both at once → the red combined icon appears, not two overlapping
-  icons.
-- Stop either → the icon disappears again within ~2s.
-- On a machine with no `/dev/video*` at all, the applet loads without
-  errors and the camera state simply never activates.
-- On a system without PipeWire (no `pw-dump`), the gray "!" icon
-  appears even with nothing active, and clicking it shows "Microphone:
-  detection unavailable (pw-dump not found — requires PipeWire)" — this
-  is the one case where the icon is persistent rather than
-  activity-only, precisely so a broken detector doesn't look identical
-  to "all quiet" forever.
-- Start a **real** screen share or capture → a red ring appears around
-  whatever the camera/mic icon already shows, including the dim idle
-  glyph if neither is active. Test with real tools, not only a
-  synthetic `GetImage` loop: each tool reads the screen differently,
-  and a synthetic loop only exercises one of them. At minimum: a
-  browser "Entire Screen" share (e.g. Google Meet), a browser "A
-  Window" share, and an OBS window source with cursor capture on.
-  Take a single one-off screenshot → no ring. Stop the capture → the
-  ring disappears within a few seconds.
-- Check `ps aux | grep screen_share_helper` before and after several
-  `cinnamon --replace` reload cycles — exactly one helper process
-  should exist, never more (confirms `PR_SET_PDEATHSIG` is working; see
-  **Screen-share detection** above for the one case this doesn't cover).
-- Use **Looking Glass** (Menu → search "Looking Glass") to watch for
-  exceptions while testing.
-- Disable/re-enable the applet several times in a row (simulating dev
-  reload cycles) and watch `top`/`htop` for the Cinnamon process — CPU
-  should stay flat, not climb, confirming the poll timer isn't stacking.
-
-## Screen-share detection
-
-X11 has no broker for screen reads the way v4l2 (camera) or PipeWire
-(mic) are brokers for their devices — any app can read the screen
-directly, with no permission check and no record of it anywhere in
-`/proc`. The ring works by watching the X server's protocol traffic
-itself (the `RECORD` extension) for the requests that read screen
-pixels, not a list of known apps:
-
-- `CopyArea` of another app's pixels (the root window, or another
-  app's window) — how Chromium-based browsers (Meet, Teams, Zoom in the
-  browser) do "Entire Screen" and "A Window" shares.
-- `GetCursorImage` polled every frame — how tools that read a window on
-  the GPU (OBS "Window Capture (Xcomposite)") draw the cursor in.
-- `GetImage`/`ShmGetImage` — screenshot tools, `ffmpeg -f x11grab`, and
-  fallback paths.
-
-Verified on real shares: Google Meet "Entire Screen" and "A Window" in
-Brave, and an OBS window source. See `project_spec.md` §7.3 for how
-each signal was found and verified.
-
-Not covered:
-- A browser **"Tab"** share. The browser captures the tab from its own
-  rendering and never asks the X server for anything, so nothing
-  outside the browser can see it (verified on a real Meet tab share).
-  Rely on the browser's own indicator for that case.
-- OBS-style window capture with **"Capture Cursor" turned off** — no
-  request is sent per frame at all.
-- Sharing a minimized window, or one on another workspace — X11 has no
-  pixels for it, so nothing is actually being read.
-
-What it deliberately does **not** flag:
-- A single screenshot — the ring only lights up after several reads in
-  quick succession (tuned to catch real capture within about a second
-  while ignoring one-off screenshots; see the constants and rationale
-  at the top of `screen_share_helper.py`).
-- Anything on Wayland — the whole mechanism this relies on doesn't
-  exist there (Wayland mediates screen capture through the compositor
-  instead, which is a cleaner design but a different one).
-
-**Known limitation:** the helper process is guaranteed to be cleaned up
-whenever Cinnamon itself restarts or you log out (verified — it uses
-`PR_SET_PDEATHSIG` so the kernel kills it the moment its parent
-process exits, not just on a graceful shutdown). Removing *only this
-applet* from the panel while leaving Cinnamon running is **not**
-currently guaranteed to stop the helper immediately in every case —
-testing found Cinnamon doesn't always invoke the applet's own cleanup
-hook for that specific action in this environment. Worst case, a
-removed instance's helper keeps running (consuming the same negligible
-CPU a normal active ring would — see `project_spec.md` §7.3's measured
-cost) until the next Cinnamon restart or logout, not indefinitely.
-
-## Notifications
-
-When an app **starts** using the camera, microphone or screen capture,
-you get a notification naming it ("Camera in use: brave (PID 2588646)").
-Nothing is shown when it stops. Notifications stay in Cinnamon's
-notification list until dismissed, also fire (with sound) while the
-screen is locked, and respect Cinnamon's "Do not disturb". There's no
-cooldown, so an app that pauses and resumes its mic is reported again.
-Opening Cinnamon's Sound settings triggers a microphone notification,
-because its input level meter really does read the mic.
+Close the tab or stop sharing, and the icon or ring disappears within a
+few seconds.
 
 ## Settings
 
-Right-click the applet → **Configure...** to change the poll interval
-(default 2s, 1-30s range) or turn notifications off (on by default).
-Screen-share detection has no separate setting — it's automatic when
-available, silent when not (see above).
+Right-click the icon → **Configure...** (or use the **Applets** window):
+
+- **Polling interval** for camera and mic checks: default 2 seconds.
+- **Notifications**: on by default.
+
+## Notifications
+
+- Shown when an app **starts** using the camera, microphone or screen
+  capture, never when it stops.
+- They stay in Cinnamon's notification list until you dismiss them,
+  and still fire (with sound) while the screen is locked.
+- Cinnamon's **Do not disturb** silences them.
+- There's no cooldown: an app that pauses and resumes is reported
+  again.
+- Opening Cinnamon's **Sound** settings triggers a microphone
+  notification. That's correct: its input level meter reads the mic.
+
+## Troubleshooting
+
+**Camera never shows.** Check `fuser` is installed, then run this while
+the camera is on:
+
+```bash
+fuser /dev/video*
+```
+
+Expected: one or more process IDs. No output means no app has the
+camera open.
+
+**Microphone never shows, or there's a gray "!" icon.** The gray icon
+means PipeWire wasn't found. Check:
+
+```bash
+pw-dump | grep -c Stream/Input/Audio
+```
+
+Expected while recording: `1` or more. `command not found` means your
+system doesn't use PipeWire, so microphone detection can't work.
+
+**Screen-capture ring never shows.** Run each of these:
+
+```bash
+echo $XDG_SESSION_TYPE                                    # expected: x11
+python3 -c "import Xlib.ext.record, Xlib.ext.res; print('ok')"   # expected: ok
+pgrep -af screen_share_helper                             # expected: exactly one line, python3 …/screen_share_helper.py
+```
+
+`wayland` means screen-capture detection isn't possible. An import
+error means `python3-xlib` is missing. No helper line means it failed
+to start: check `~/.xsession-errors` for a line mentioning
+`cinnamon-privacy-indicator@cray2015`.
+
+**No notifications.** Make sure they're switched on in **Configure...**
+and that Do not disturb is off:
+
+```bash
+gsettings get org.cinnamon.desktop.notifications display-notifications   # expected: true
+```
+
+**Something else.** Reload Cinnamon (Alt+F2, `r`) and try again.
+Developer-level checks are in `project_spec.md` §10.
+
+## Screen-capture detection
+
+X11 has no permission system for reading the screen, so the applet
+watches the display server for the requests apps use to read screen
+pixels. Tested with Google Meet in Brave ("Entire screen" and
+"Window"), OBS, and screenshot-style capture.
+
+Not detected:
+- **Browser tab sharing.** The browser captures the tab internally,
+  so nothing outside it can see this. Rely on the browser's own
+  indicator.
+- **OBS window capture with "Capture Cursor" turned off.**
+- **Wayland sessions.**
+- **A single screenshot.** This is intentional: only ongoing capture
+  counts.
+
+Details: `project_spec.md` §7.3.
 
 ## License
 
-GPL-2.0-or-later — see `LICENSE`. Matches Cinnamon's own license and
-the convention for Cinnamon Spices applets; `applet.js` imports
-Cinnamon's own GPL-licensed UI modules (`imports.ui.applet`, etc.)
-directly.
+GPL-2.0-or-later, see `LICENSE`.
